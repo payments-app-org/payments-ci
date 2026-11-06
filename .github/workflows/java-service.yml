@@ -1,0 +1,122 @@
+# Шаблон CI Java-сервиса. Подключается из репозитория сервиса:
+#   jobs:
+#     ci:
+#       uses: payments-app-org/payments-ci/.github/workflows/java-service.yml@v1
+#       secrets: inherit
+#       permissions: { contents: read, packages: write }
+# PR: сборка и тесты → проверка зависимостей → сборка образа и его проверка. main: то же + публикация образа в GHCR.
+# Общая библиотека payments-platform скачивается из GitHub Packages встроенным токеном.
+# Действия закреплены по SHA коммита (тег можно переписать задним числом), обновляет их Dependabot.
+name: java-service
+
+on:
+  workflow_call:
+
+env:
+  JAVA_VERSION: "21"
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # Unit-тесты и интеграционные на Testcontainers (Docker на машинах GitHub есть)
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+      - name: Build and test
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mvn -B -ntp -s .mvn/settings.xml verify
+      - name: Test reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports
+            target/failsafe-reports
+          retention-days: 7
+
+  # Известные уязвимости в зависимостях: отчёт по CRITICAL и HIGH, отказ — только на CRITICAL с исправленной версией
+  dependencies:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Vulnerability report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+      - name: Fail on fixable critical
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true
+
+  # Образ → проверка уязвимостей (пакеты ОС и app.jar). В PR — только сборка и проверка (так проверяется и Dockerfile),
+  # в main — ещё публикация. Тег — SHA коммита: в окружении будет ровно этот код. Слои — в кэше GitHub Actions.
+  image:
+    needs: [build, dependencies]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          # Токен для скачивания payments-platform — секретом сборки: в слои образа он не попадает
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker push --all-tags ${{ env.IMAGE }}
+
+  # Одна проверка для защиты main: «ci / ok»
+  ok:
+    if: always()
+    needs: [build, dependencies, image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks passed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: exit 1
+      - run: echo "CI зелёный"
