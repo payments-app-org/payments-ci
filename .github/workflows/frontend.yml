@@ -1,5 +1,5 @@
-# Шаблон CI фронтенда: проверка типов TypeScript, сборка, проверка зависимостей npm.
-# Образ фронтенда пока не публикуем: Dockerfile — dev-сервер Vite; боевой (nginx со статикой) — на этапе Kubernetes.
+# Шаблон CI фронтенда: проверка типов TypeScript, сборка, проверка зависимостей npm, образ (nginx со статикой).
+# main: то же + публикация образа в GHCR и выкатка (deploy.yml).
 name: frontend
 
 on:
@@ -7,6 +7,7 @@ on:
 
 env:
   NODE_VERSION: "22"
+  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   build:
@@ -36,9 +37,54 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
+  # Образ → проверка уязвимостей (пакеты ОС nginx). В PR — только сборка и проверка, в main — ещё публикация
+  image:
+    needs: [build, dependencies]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker push --all-tags ${{ env.IMAGE }}
+
+  # После публикации образа — выкатка. В PR пропускается
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: payments-app-org/payments-ci/.github/workflows/deploy.yml@v1
+    secrets: inherit
+    permissions: {}
+
   ok:
     if: always()
-    needs: [build, dependencies]
+    needs: [build, dependencies, image]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed
