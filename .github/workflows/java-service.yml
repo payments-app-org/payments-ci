@@ -4,7 +4,8 @@
 #       uses: payments-app-org/payments-ci/.github/workflows/java-service.yml@v1
 #       secrets: inherit
 #       permissions: { contents: read, packages: write }
-# PR: сборка и тесты → проверка зависимостей → сборка образа и его проверка. main: то же + публикация образа в GHCR.
+# PR: сборка и тесты → проверка зависимостей → сборка образа и его проверка. main: то же + публикация образа в GHCR
+# и выкатка (deploy.yml: тег образа — в payments-deploy, дальше Argo CD).
 # Общая библиотека payments-platform скачивается из GitHub Packages встроенным токеном.
 # Действия закреплены по SHA коммита (тег можно переписать задним числом), обновляет их Dependabot.
 name: java-service
@@ -110,7 +111,16 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: docker push --all-tags ${{ env.IMAGE }}
 
-  # Одна проверка для защиты main: «ci / ok»
+  # После публикации образа — выкатка. В PR пропускается
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: payments-app-org/payments-ci/.github/workflows/deploy.yml@v1
+    secrets: inherit
+    permissions: {}
+
+  # Одна проверка для защиты main: «ci / ok». Выкатку не ждёт: в PR её нет
+
   ok:
     if: always()
     needs: [build, dependencies, image]
