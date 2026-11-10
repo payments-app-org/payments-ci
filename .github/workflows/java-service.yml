@@ -80,6 +80,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Эмуляция arm64 на машине GitHub (amd64) — только для команд финального слоя образа
+      # (useradd, apk upgrade); сборка jar/статики идёт без эмуляции (FROM --platform=$BUILDPLATFORM)
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -87,11 +90,35 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Образ для проверки — amd64, в локальный Docker машины: его проверяет Trivy
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
+          platforms: linux/amd64
           load: true
+          # Токен для скачивания payments-platform — секретом сборки: в слои образа он не попадает
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+      # Пакеты ОС у вариантов базового образа для amd64 и arm64 одних версий — проверяем один
+      - name: Scan image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      # Образ для двух архитектур: amd64 (серверы) и arm64 (Mac на Apple Silicon — иначе он запускает amd64
+      # через эмуляцию, и JVM стартует в разы дольше). Слои amd64 — из кэша шага Build.
+      # В main — публикация (один тег на обе архитектуры), в PR — проверка, что arm64 собирается
+      - name: Build for amd64 and arm64
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           # Токен для скачивания payments-platform — секретом сборки: в слои образа он не попадает
           secrets: |
             github_token=${{ secrets.GITHUB_TOKEN }}
@@ -100,16 +127,6 @@ jobs:
             ${{ env.IMAGE }}:main
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Scan image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-      - name: Push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: docker push --all-tags ${{ env.IMAGE }}
 
   # После публикации образа — выкатка в prod по кнопке (подтверждение окружения prod). В PR пропускается
   deploy:

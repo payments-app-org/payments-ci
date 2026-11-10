@@ -11,6 +11,8 @@
 | `frontend.yml` | `payments-frontend` | `npm ci`, `npm run build` (проверка типов и сборка), Trivy → образ (nginx со статикой) → Trivy по образу → в `main` публикация и выкатка |
 | `deploy.yml` | вызывают `java-service.yml` и `frontend.yml` | после публикации образа в `main` ждёт кнопки (окружение `prod`), затем записывает тег образа в [payments-deploy](https://github.com/payments-app-org/payments-deploy) (`scripts/set-image.sh` → `envs/prod/services/<сервис>.yaml`); дальше Argo CD в кластере выкатывает сервис |
 
+**Образы — для amd64 и arm64** (`java-service.yml`, `frontend.yml`): один тег на обе архитектуры, Docker сам берёт свою. arm64 нужен для Mac на Apple Silicon: amd64-образ там работает через эмуляцию, и JVM стартует в разы дольше. Trivy проверяет вариант amd64. В Dockerfile стадия сборки — `FROM --platform=$BUILDPLATFORM`: Maven и npm работают без эмуляции, под arm64 собирается только финальный слой (QEMU).
+
 У каждого шаблона итоговая задача `ok` — её требует защита `main` (проверка «ci / ok»). Выкатку `ok` не ждёт: в PR её нет.
 
 **Выкатка — по кнопке.** В репозитории сервиса окружение `prod` с обязательным подтверждением (Settings →
