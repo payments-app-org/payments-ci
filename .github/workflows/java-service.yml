@@ -5,7 +5,7 @@
 #       secrets: inherit
 #       permissions: { contents: read, packages: write }
 # PR: сборка и тесты → проверка зависимостей → сборка образа и его проверка. main: то же + публикация образа в GHCR
-# и выкатка (deploy.yml: тег образа — в payments-deploy, дальше Argo CD).
+# и выкатка по кнопке (deploy.yml: тег образа — в payments-deploy, дальше Argo CD).
 # Общая библиотека payments-platform скачивается из GitHub Packages встроенным токеном.
 # Действия закреплены по SHA коммита (тег можно переписать задним числом), обновляет их Dependabot.
 name: java-service
@@ -111,7 +111,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: docker push --all-tags ${{ env.IMAGE }}
 
-  # После публикации образа — выкатка. В PR пропускается
+  # После публикации образа — выкатка в prod по кнопке (подтверждение окружения prod). В PR пропускается
   deploy:
     needs: image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

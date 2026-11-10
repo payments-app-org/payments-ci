@@ -74,7 +74,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: docker push --all-tags ${{ env.IMAGE }}
 
-  # После публикации образа — выкатка. В PR пропускается
+  # После публикации образа — выкатка в prod по кнопке (подтверждение окружения prod). В PR пропускается
   deploy:
     needs: image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

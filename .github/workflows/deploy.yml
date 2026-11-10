@@ -1,6 +1,8 @@
-# Шаблон выкатки: записать тег только что опубликованного образа в payments-deploy (services/<сервис>.yaml).
-# Дальше Argo CD в кластере видит коммит и выкатывает сервис: CI до кластера на ноутбуке не достаёт,
-# поэтому он только пишет в git, а кластер забирает сам (GitOps).
+# Шаблон выкатки в окружение prod — по кнопке: задача ждёт подтверждения (окружение prod в репозитории сервиса
+# с обязательным подтверждением; в запуске — Review deployments → prod → Approve and deploy, аналог when: manual в GitLab).
+# После кнопки записывает тег только что опубликованного образа в payments-deploy (scripts/set-image.sh — где лежит тег,
+# знает сам payments-deploy). Дальше Argo CD в кластере видит коммит и выкатывает сервис: CI до кластера на ноутбуке
+# не достаёт, поэтому он только пишет в git, а кластер забирает сам (GitOps).
 # Вызывается из java-service.yml и frontend.yml после публикации образа в main.
 # Сервис — имя репозитория без «payments-», тег — SHA коммита (им же помечен образ).
 name: deploy
@@ -9,13 +11,17 @@ on:
   workflow_call:
     secrets:
       DEPLOY_KEY:
-        description: SSH-ключ с правом записи в payments-deploy (секрет организации)
+        description: SSH-ключ с правом записи в payments-deploy (секрет репозитория сервиса)
         required: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions: {}
+    # Окружение репозитория сервиса: подтверждение перед стартом задачи и история выкаток (Deployments)
+    environment:
+      name: prod
+      url: http://payments.localhost
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,9 +33,7 @@ jobs:
           SOURCE: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
         run: |
           service="${GITHUB_REPOSITORY#*/payments-}"
-          file="services/${service}.yaml"
-          [ -f "$file" ] || { echo "::error::В payments-deploy нет $file"; exit 1; }
-          yq -i '.image.tag = strenv(TAG)' "$file"
+          scripts/set-image.sh "$service" "$TAG" prod
           if git diff --quiet; then
             echo "Тег $TAG уже записан"
             exit 0
@@ -41,7 +45,7 @@ jobs:
           for attempt in 1 2 3 4 5; do
             if git push -q origin HEAD:main; then
               echo "### ${service} → ${TAG:0:7}" >> "$GITHUB_STEP_SUMMARY"
-              echo "Записано в payments-deploy/${file}. Argo CD выкатит в течение минуты: http://argocd.localhost" >> "$GITHUB_STEP_SUMMARY"
+              echo "Записано в payments-deploy (окружение prod). Argo CD выкатит в течение минуты: http://argocd.localhost" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             sleep $((attempt * 2))
